@@ -90,27 +90,27 @@ This document is prepared to introduce Claude to the project's data structure, s
 | **Train** | Dataset_1024_8bit | 8,557 | 34,228 |
 | **Test** | Dataset_Test_1024_8bit | 1,655 | 6,620 |
 
-### Train Set: 8,557 Patients — Pixel Distribution by Class
+### Train Set: 8,557 Patients — BI-RADS Distribution
 
-| Class | Tissue Pixels (nonzero) | Ratio |
-| --- | --- | --- |
-| BI-RADS-1 | 2,314,247,381 | 18.7% |
-| BI-RADS-2 | 4,013,136,317 | 32.4% |
-| BI-RADS-4 | 2,738,316,060 | 22.1% |
-| BI-RADS-5 | 3,301,005,784 | 26.7% |
-| **Total** | **12,366,705,542** | — |
+| Class | Patients | Patient Ratio | Images |
+| --- | --- | --- | --- |
+| BI-RADS-1 | 1,678 | 19.61% | 6,712 |
+| BI-RADS-2 | 2,754 | 32.18% | 11,016 |
+| BI-RADS-4 | 1,898 | 22.18% | 7,592 |
+| BI-RADS-5 | 2,227 | 26.03% | 8,908 |
+| **Total** | **8,557** | 100% | **34,228** |
 
-### Test Set: 1,655 Patients — Pixel Distribution by Class
+### Test Set: 1,655 Patients — BI-RADS Distribution
 
-| Class | Tissue Pixels (nonzero) | Ratio |
-| --- | --- | --- |
-| BI-RADS-1 | 236,522,596 | 9.7% |
-| BI-RADS-2 | 876,891,567 | 36.0% |
-| BI-RADS-4 | 421,038,405 | 17.3% |
-| BI-RADS-5 | 900,864,020 | 37.0% |
-| **Total** | **2,435,316,588** | — |
+| Class | Patients | Patient Ratio | Images |
+| --- | --- | --- | --- |
+| BI-RADS-1 | 163 | 9.85% | 652 |
+| BI-RADS-2 | 596 | 36.01% | 2,384 |
+| BI-RADS-4 | 288 | 17.40% | 1,152 |
+| BI-RADS-5 | 608 | 36.74% | 2,432 |
+| **Total** | **1,655** | 100% | **6,620** |
 
-> BI-RADS-3 class does not exist. The test set is **imbalanced** — BI-RADS-2 and BI-RADS-5 are dominant.
+> BI-RADS-3 class does not exist. The test set is **imbalanced** — BI-RADS-2 and BI-RADS-5 are dominant, and BR1 is markedly under-represented (9.85% test vs 19.61% train) — this prior shift is the dominant source of the train→test gap discussed in Lessons #50/#54/#55.
 
 ### Split Details
 
