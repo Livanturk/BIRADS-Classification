@@ -1,0 +1,174 @@
+# =============================================================================
+# C6-MammoPre — ConvNeXtV2-Base + in-domain MAE pretrained encoder | seed=7
+# =============================================================================
+# Direction #1 (Lesson #62 follow-up). Same C6 hierarchy + loss as the
+# Large-backbone baseline; differences:
+#   - backbone: convnextv2_base (was Large)
+#   - feature_dim: 1024 (was 1536; projection_dim=512 unchanged)
+#   - pretrained_checkpoint: outputs/mae_pretrain_base/encoder_only_best.pt
+#     → overrides timm's ImageNet-FCMAE weights with our mammography-MAE weights
+#       produced by tools/train_mae.py
+#
+# Why this might escape the closed class (Lesson #62):
+#   The closed class was "aux loss on patient_feat / fusion stack." Direction
+#   #1 changes the BACKBONE WEIGHTS, not the loss. No aux gradient. Standard
+#   single-objective CE+sub+binary loss as in vanilla C6 — the only change
+#   is which weights the backbone starts from.
+#
+# Expected lift (Wei 2021, in-domain MAE regime, ~34k images):
+#   BR1 F1: +1-2pp over vanilla C6 mean (0.474 → 0.49-0.50)
+#   macro F1: +1-1.5pp (0.6502 → 0.66-0.67)
+#   But: smaller-Base backbone has Lesson #25's ~1-2pp size penalty.
+#   Net: roughly neutral-to-positive depending on which dominates.
+#
+# Kill criteria:
+#   1) val_full_f1_macro < 0.58 by epoch 15 (slightly looser than vanilla
+#      0.60 because Base+mammoMAE may need a couple more warmup epochs).
+#   2) per-seed test macro F1 < 0.62 — Base+ImageNet baseline floor.
+#   3) sd > 0.025 across n=4 students — closed-class fingerprint.
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "C6 + ConvNeXtV2-Base + in-domain MAE pretrain — seed=7"
+  seed: 7
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    # NOTE: Base, NOT Large — Direction #1 swap.
+    name: "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    pretrained: true   # still load ImageNet weights via timm — we then OVERRIDE.
+    freeze_layers: 0
+    feature_dim: 1024  # Base trunk is 1024-dim (was 1536 for Large)
+    projection_dropout: 0.2
+    # In-domain MAE-pretrained encoder. Created by tools/train_mae.py.
+    # Overrides ImageNet weights from timm. Path is relative to repo root.
+    pretrained_checkpoint: "outputs/mae_pretrain_base/encoder_only_best.pt"
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  use_swa: true
+  swa_start_epoch: 5
+
+  asymmetry_loss_weight: 0.0
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0
+  asymmetry_malign_weight: 1.0
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-1024-8bit-mammopre"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_base_8bit_ablation_c6_mammopre_seed7/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_base_8bit_ablation_c6_mammopre_seed7/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_base_8bit_ablation_c6_mammopre_seed7/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_base_8bit_ablation_c6_mammopre_seed7/checkpoints"
+  save_top_k: 3
+  save_last: true

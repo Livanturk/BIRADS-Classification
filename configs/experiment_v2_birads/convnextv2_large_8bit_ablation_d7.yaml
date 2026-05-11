@@ -1,0 +1,184 @@
+# =============================================================================
+# D7 — ConvNeXtV2-Large CE + SWA + Mixup/CutMix | 8-bit 1024² | No Asymmetry
+# =============================================================================
+# C6'ya Mixup/CutMix eklenir. SWA korunur. Tek değişken: Mixup/CutMix eklenmesi.
+#
+# Motivasyon: C1 (SWA + Mixup + asym=0.10) → test 0.6431 — antagonistik (Lesson #23).
+#   Ama C1'de asym loss VARDI. Lesson #23'ün mekanistik açıklaması:
+#     "SWA ve Mixup ikisi de karar sınırlarını yumuşatır → redundant"
+#   Bu açıklama doğru mu, yoksa antagonizm asymmetry noise'undan mı geldi?
+#
+#   D7 = C1 - asymmetry loss. Temiz loss üzerinde SWA+Mixup retesti.
+#     Eğer D7 > C6 → SWA+Mixup uyumsuz değilmiş, asym noise suçlu
+#     Eğer D7 < C6 → SWA+Mixup gerçekten antagonistik (Lesson #23 kesin)
+#     Eğer D7 ~ C6 → Mixup nötr etki (SWA dominates)
+#
+# Karşılaştırma:
+#   C1  = CE + SWA + Mixup + asym (0.10)    → test 0.6431
+#   C6  = CE + SWA + no asym                → test 0.6762
+#   D6  = CE + Mixup + no asym (SWA yok)    → test ???
+#   D7  = CE + SWA + Mixup + no asym        → test ???
+#
+#   D7 vs C1 = asymmetry kaldırmanın SWA+Mixup'a etkisi
+#   D7 vs C6 = Mixup'ın SWA+temiz loss'a katkısı/zararı
+#   D7 vs D6 = SWA'nın Mixup+temiz loss'a katkısı
+#
+# Config diff (C6'dan):
+#   + training.use_mixup: true
+#   + training.mixup_alpha: 0.2
+#   + training.use_cutmix: true
+#   + training.cutmix_alpha: 1.0
+#   Diğer tüm parametreler C6 ile AYNI (SWA ve no asymmetry dahil).
+#
+# Hipotez: Kritik bilgi deneyi.
+#   Eğer D7 > 0.69 → SWA+Mixup temiz loss'ta çalışıyor, en iyi 8-bit olabilir.
+#   Eğer D7 < 0.66 → Lesson #23 kesin doğrulanır.
+# Kill kriteri: val_full_f1_macro < 0.55 by epoch 15.
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "D7 — ConvNeXtV2-Large CE + SWA + Mixup | 8-bit 1024 | SWA+Mixup retest on clean loss"
+  seed: 42
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  use_swa: true
+  swa_start_epoch: 5
+
+  # D7: Mixup/CutMix eklendi (C1 retesti temiz loss üzerinde)
+  use_mixup: true
+  mixup_alpha: 0.2
+  use_cutmix: true
+  cutmix_alpha: 1.0
+
+  asymmetry_loss_weight: 0.0
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0
+  asymmetry_malign_weight: 1.0
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-1024-8bit-ablation"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_8bit_ablation_d7/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_d7/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_d7/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_8bit_ablation_d7/checkpoints"
+  save_top_k: 3
+  save_last: true

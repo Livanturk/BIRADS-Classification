@@ -1,0 +1,185 @@
+# =============================================================================
+# C6-PerRegion — ConvNeXtV2-Large + per-region malign head | seed=555
+# =============================================================================
+# Track B (Lesson #62). Same architecture/schedule as C6 PLUS an auxiliary
+# per-region head reading per-view spatial tokens BEFORE fusion.
+#
+# Mechanism (distinct from the closed aux-loss-on-patient_feat class):
+#   - The head's gradient flows ONLY into the backbone (through view_features),
+#     NOT into the lateral_fusion or bilateral_fusion modules, NOT into patient_feat.
+#   - Loss target is binary: (BR1+BR2)→0, (BR4+BR5)→1. Encourages the
+#     backbone to develop spatial features where high-malign-score patches
+#     correspond to actual malignant tissue. BR4 vs BR5 differ in
+#     density-of-malign-regions (Lesson #48 margin: 0.26 vs 1.76); the
+#     top-k aggregation in the per-region head captures this density.
+#
+# Hyperparameters (informed by Lesson #62 caution):
+#   weight=0.10        — moderate; aux loss is on a NEW pathway, not
+#                        on the closed class, so we can afford higher
+#                        weight than SupCon's β=0.03.
+#   top_k=30           — 0.7% of 4096 tokens — focused but not sparse.
+#   token_dropout=0.1  — light per-token dropout to prevent single-token
+#                        dominance during top-k selection.
+#   hidden_dim=64      — small per-token MLP; cheap on 4096 tokens × B=2 × accum=32.
+#
+# Kill criteria (Lesson #62 fingerprint AND new):
+#   1) val_full_f1_macro < 0.60 by epoch 15 (standard).
+#   2) sd(test_full_f1_macro) across n=4 students > 0.025 (closed-class fingerprint).
+#   3) per_region_malign_loss does NOT decrease in first 5 epochs (head is
+#      not learning anything; weight too low or top_k too small).
+#   4) val_full_f1_BIRADS-4 ever drops below 0.40 mid-run (new — confirms
+#      backbone regularization didn't HURT BR4 specifically).
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "C6 + per-region malign head (weight=0.10, top_k=30) — seed=555"
+  seed: 555
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  use_swa: true
+  swa_start_epoch: 5
+
+  asymmetry_loss_weight: 0.0
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0
+  asymmetry_malign_weight: 1.0
+
+  # --- Track B: Per-Region Malign Head loss ---
+  per_region_malign:
+    enabled: true
+    weight: 0.10
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+  # --- Per-Region Malign Head (model side) ---
+  per_region_malign:
+    enabled: true
+    top_k: 30
+    hidden_dim: 64
+    token_dropout: 0.1
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-1024-8bit-perregion"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c6_perregion_seed555/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c6_perregion_seed555/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c6_perregion_seed555/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_8bit_ablation_c6_perregion_seed555/checkpoints"
+  save_top_k: 3
+  save_last: true

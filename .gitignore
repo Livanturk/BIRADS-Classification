@@ -1,0 +1,39 @@
+# Large dataset folders
+artifacts/
+checkpoints/
+Dataset_1024_8bit/
+Dataset_Test_1024_8bit/
+
+# Output heavy folders
+outputs/**/checkpoints/
+outputs/**/gradcam/
+outputs/**/plots/
+
+# Output heavy files
+outputs/**/*.pt
+outputs/**/*.pth
+outputs/**/*.ckpt
+outputs/**/*.onnx
+outputs/**/*.npz
+outputs/**/*.log
+
+# Model weights / numpy arrays / logs globally
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npz
+*.log
+*.png
+*.parquet
+# Scripts or external experiment tools
+scripts/
+wandb/
+
+# MLflow local DB
+mlflow.db
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc

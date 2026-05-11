@@ -1,0 +1,159 @@
+# =============================================================================
+# ConvNeXtV2-Large — Deformable + Asymmetry (Malign-Only) + Loss Reweight
+# =============================================================================
+# Base: convnextv2_large_seg_deformable_v1 (test F1: 0.6929)
+# Hamle 2: asymmetry_benign_weight: 0.0 → BIRADS-1 artık zarar görmez
+# Hamle 3: subgroup_head ağırlığı 0.35 → 0.45 → BIRADS-2 daha güçlü sinyal
+#
+# Neden önceki asym_v2 BIRADS-1'i mahvetti:
+#   benign_weight=1.0 ile tüm benign vakalara (BIRADS-1 dahil) ||f_diff||² penalty
+#   uygulandı. BIRADS-1 "tamamen normal" memedir ve f_diff'ini sıfırlamak modeli
+#   normal doku özelliklerini de baskılıyordu.
+#
+# Malign-only ile: sadece BIRADS-4 ve BIRADS-5 vakalarında asimetri büyütülür.
+# BIRADS-1 ve BIRADS-2'ye hiç dokunulmaz → BIRADS-1 kaybı yaşanmaz.
+#
+# Hamle 3 (loss reweight) aynı config'e gömülü:
+#   Subgroup head = BIRADS-1 vs 2 + BIRADS-4 vs 5 ayrımlarını öğrenir.
+#   Ağırlık 0.35 → 0.45 ile BIRADS-2'ye daha güçlü supervision sinyali gelir.
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "ConvNeXtV2-Large seg — Deformable + Asymmetry malign-only + loss reweight"
+  seed: 42
+
+data:
+  root_dir: "Dataset_512"
+  test_dir: "Dataset_512_Test"
+  image_size: 512
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 16
+  dataset_variant: "seg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true           # f_diff zorunlu
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 4
+  gradient_accumulation_steps: 16
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  # Hamle 3 — Loss reweight (BIRADS-2 için daha güçlü subgroup sinyali)
+  loss_weights:
+    binary_head: 0.10        # 0.15 → 0.10
+    subgroup_head: 0.45      # 0.35 → 0.45
+    full_head: 0.45          # 0.50 → 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  # Hamle 2 — Asymmetry malign-only
+  asymmetry_loss_weight: 0.10
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0    # ← BIRADS-1/2'ye dokunma
+  asymmetry_malign_weight: 1.0    # ← sadece BIRADS-4/5 asimetrisini büyüt
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-512-backbone-sweep"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_seg_deformable_asymmetry_malignonly_v1/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_seg_deformable_asymmetry_malignonly_v1/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_seg_deformable_asymmetry_malignonly_v1/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_seg_deformable_asymmetry_malignonly_v1/checkpoints"
+  save_top_k: 3
+  save_last: true

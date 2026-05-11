@@ -1,0 +1,154 @@
+# =============================================================================
+# ConvNeXtV2-Large — Segmentasyonlu + Bilateral Asymmetry Contrastive Loss
+# =============================================================================
+# Deney: convnextv2_large_seg_v1 üzerine Asimetri Kaybı eklendi.
+# Backbone: convnextv2_large.fcmae_ft_in22k_in1k_384 (1536-dim)
+# Değişiklik: BilateralFusion F_diff vektörü üzerinde AsymmetryContrastiveLoss
+#
+# Beklenen Kazanım:
+#   Radyologlar bilateral asimetriyi malignite belirtisi olarak kullanır.
+#   Bu kayıp, modeli bu klinik ilkeye uymaya zorlar:
+#   - Benign vakalar: F_diff ≈ 0 (iki meme simetrik olmalı)
+#   - Malign vakalar: ||F_diff|| > margin (bir tarafta kitle var)
+#   → Bilateral fusion modülünün daha discriminative özellik öğrenmesi
+#   → Özellikle unilateral tümörlerin yakalanmasında iyileşme beklenir
+#
+# Hiperparametre Önerileri:
+#   asymmetry_loss_weight: 0.1  (toplam kaybın ~%10'u)
+#   asymmetry_margin: 1.0       (L2 norm hedefi — projection dim 512 için uygun)
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "ConvNeXtV2-Large seg — Asymmetry Contrastive Loss experiment"
+  seed: 42
+
+data:
+  root_dir: "Dataset_512"
+  test_dir: "Dataset_512_Test"
+  image_size: 512
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 16
+  dataset_variant: "seg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true    # F_diff hesaplanmalı (asymmetry loss için zorunlu)
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 4
+  gradient_accumulation_steps: 16
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.15
+    subgroup_head: 0.35
+    full_head: 0.50
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  # Asimetri kaybı hiperparametreleri
+  asymmetry_loss_weight: 0.1    # ← Toplam kayba katkı ağırlığı
+  asymmetry_margin: 1.0         # ← Malign için hedef F_diff normu
+
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true    # F_diff için bilateral fusion zorunlu
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-512-backbone-sweep"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_seg_asymmetry_v1/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_seg_asymmetry_v1/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_seg_asymmetry_v1/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_seg_asymmetry_v1/checkpoints"
+  save_top_k: 3
+  save_last: true

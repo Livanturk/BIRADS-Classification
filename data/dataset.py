@@ -1,0 +1,481 @@
+"""
+Mammography Multi-View Patient-Level Dataset
+=============================================
+Bu modül hasta bazlı mammografi veri setini yükler.
+Her hasta için 4 görüntü (RCC, LCC, RMLO, LMLO) tek bir örnek olarak döndürülür.
+
+Klasör Yapısı:
+    root_dir/
+        BI-RADS_1/
+            patient_001/
+                RCC.png     (Sağ Craniocaudal)
+                LCC.png     (Sol Craniocaudal)
+                RMLO.png    (Sağ Mediolateral Oblique)
+                LMLO.png    (Sol Mediolateral Oblique)
+            patient_002/
+                ...
+        BI-RADS_2/
+            ...
+        BI-RADS_4/
+            ...
+        BI-RADS_5/
+            ...
+
+    Etiketler klasör yapısından otomatik olarak çıkarılır.
+    BI-RADS klasör adı → sınıf etiketi dönüşümü:
+        BI-RADS_1 → 0, BI-RADS_2 → 1, BI-RADS_4 → 2, BI-RADS_5 → 3
+
+16-bit PNG Desteği:
+    - bit_depth=16 modunda PIL mode "I;16" olarak açılır.
+    - numpy float32'ye dönüştürülüp [0, 65535] → [0, 1] normalize edilir.
+    - 3 kanala kopyalanarak (3, H, W) tensor'e çevrilir.
+    - Transform'lar tensor üzerinde çalışır (torchvision.transforms.v2).
+"""
+
+import os
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import StratifiedKFold, train_test_split
+
+from data.transforms import get_train_transforms, get_val_transforms
+
+
+# Her mammografi görüntüsünün standart adı
+VIEW_NAMES = ["RCC", "LCC", "RMLO", "LMLO"]
+
+
+class MammographyDataset(Dataset):
+    """
+    Hasta bazlı mammografi veri seti.
+
+    Her __getitem__ çağrısında bir hastanın 4 görüntüsünü ve etiketini döndürür.
+
+    Args:
+        patient_dirs: Hasta klasör yollarının listesi.
+        labels: Her hasta için BI-RADS etiketi (0-indexed: 0=BIRADS1, 1=BIRADS2, 2=BIRADS4, 3=BIRADS5).
+        transform: Torchvision transform pipeline (tensor üzerinde çalışır).
+        view_names: Görüntü dosya adları listesi (varsayılan: RCC, LCC, RMLO, LMLO).
+        bit_depth: Görüntü bit derinliği (8 veya 16).
+
+    Returns:
+        dict:
+            - "images": (4, C, H, W) boyutunda tensor — 4 görüntü yığını.
+            - "label": Skaler tensor — BI-RADS sınıf indeksi.
+            - "patient_id": str — Hasta klasör adı.
+    """
+
+    def __init__(
+        self,
+        patient_dirs: List[str],
+        labels: List[int],
+        transform=None,
+        view_names: List[str] = None,
+        bit_depth: int = 16,
+        soft_target_index: Optional[Dict[str, np.ndarray]] = None,
+        num_classes: int = 4,
+    ):
+        assert len(patient_dirs) == len(labels), (
+            f"Hasta sayısı ({len(patient_dirs)}) ve etiket sayısı ({len(labels)}) eşleşmiyor!"
+        )
+
+        self.patient_dirs = patient_dirs
+        self.labels = labels
+        self.transform = transform
+        self.view_names = view_names or VIEW_NAMES
+        self.bit_depth = bit_depth
+        # patient_id -> (num_classes,) np.float32 raw teacher logits. None disables.
+        self.soft_target_index = soft_target_index
+        self.num_classes = num_classes
+
+    def __len__(self) -> int:
+        return len(self.patient_dirs)
+
+    def _load_image_16bit(self, img_path: Path) -> torch.Tensor:
+        """
+        16-bit PNG görüntüsünü float32 tensor olarak yükler.
+
+        Akış:
+            PIL (mode="I;16") → numpy float32 → [0, 1] normalize → 3 kanal → tensor
+
+        Returns:
+            (3, H, W) float32 tensor, [0, 1] aralığında.
+        """
+        img = Image.open(img_path)
+        # PIL mode "I;16" uint16 olarak açar
+        img_array = np.array(img, dtype=np.float32) / 65535.0
+        # 3 kanala kopyala (pretrained backbone RGB bekler)
+        img_tensor = torch.from_numpy(img_array).unsqueeze(0).expand(3, -1, -1).clone()
+        return img_tensor
+
+    def _load_image_8bit(self, img_path: Path) -> torch.Tensor:
+        """
+        8-bit PNG görüntüsünü float32 tensor olarak yükler (geriye uyumluluk).
+
+        Returns:
+            (3, H, W) float32 tensor, [0, 1] aralığında.
+        """
+        img = Image.open(img_path).convert("L")
+        img_array = np.array(img, dtype=np.float32) / 255.0
+        img_tensor = torch.from_numpy(img_array).unsqueeze(0).expand(3, -1, -1).clone()
+        return img_tensor
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        patient_dir = Path(self.patient_dirs[idx])
+        label = self.labels[idx]
+        patient_id = patient_dir.name
+
+        images = []
+        for view_name in self.view_names:
+            img_path = patient_dir / f"{view_name}.png"
+
+            if not img_path.exists():
+                raise FileNotFoundError(
+                    f"Görüntü bulunamadı: {img_path}\n"
+                    f"Hasta klasöründe {view_name}.png dosyası eksik."
+                )
+
+            # Bit derinliğine göre uygun yükleme fonksiyonunu kullan
+            if self.bit_depth == 16:
+                img = self._load_image_16bit(img_path)
+            else:
+                img = self._load_image_8bit(img_path)
+
+            # Transform uygula (tensor üzerinde: resize, augmentation, normalize)
+            if self.transform:
+                img = self.transform(img)
+
+            images.append(img)
+
+        # (4, C, H, W) boyutunda tensor oluştur
+        images_tensor = torch.stack(images, dim=0)
+
+        item = {
+            "images": images_tensor,            # (4, 3, H, W)
+            "label": torch.tensor(label, dtype=torch.long),
+            "patient_id": patient_id,
+        }
+        # Distillation soft target (Direction #5): per-patient raw teacher
+        # logits, shape (num_classes,). soft_target_mask=True iff this patient
+        # was in the precomputed teacher set; otherwise zeros (the loss
+        # function ignores masked-out rows so the placeholder values do not
+        # affect gradients).
+        if self.soft_target_index is not None:
+            tgt = self.soft_target_index.get(patient_id)
+            if tgt is None:
+                item["soft_target"] = torch.zeros(self.num_classes, dtype=torch.float32)
+                item["soft_target_mask"] = torch.tensor(False)
+            else:
+                item["soft_target"] = torch.from_numpy(np.asarray(tgt, dtype=np.float32))
+                item["soft_target_mask"] = torch.tensor(True)
+        return item
+
+
+# BI-RADS klasör adlarını 0-indexed sınıf indekslerine çevirme haritası
+# Klasör adı → sınıf indeksi
+BIRADS_FOLDER_TO_INDEX = {
+    "BI-RADS_1": 0,
+    "BI-RADS_2": 1,
+    "BI-RADS_4": 2,
+    "BI-RADS_5": 3,
+}
+
+# Sınıf indeksi → BI-RADS numarası (görselleştirme için)
+INDEX_TO_BIRADS = {0: 1, 1: 2, 2: 4, 3: 5}
+
+# Geriye uyumluluk için eski harita da korunur
+BIRADS_TO_INDEX = {1: 0, 2: 1, 4: 2, 5: 3}
+
+# Binary (Benign/Malign) etiket haritası
+BIRADS_TO_BINARY = {1: 0, 2: 0, 4: 1, 5: 1}  # 0=Benign, 1=Malign
+
+
+def scan_dataset_from_folders(root_dir: str) -> Tuple[List[str], List[int]]:
+    """
+    Klasör yapısından hasta dizinlerini ve etiketlerini tarar.
+
+    Beklenen yapı:
+        root_dir/
+            BI-RADS_1/
+                patient_001/   (içinde RCC.png, LCC.png, RMLO.png, LMLO.png)
+                patient_002/
+            BI-RADS_2/
+                ...
+            BI-RADS_4/
+                ...
+            BI-RADS_5/
+                ...
+
+    Args:
+        root_dir: Veri setinin kök dizini (BI-RADS klasörlerini içeren).
+
+    Returns:
+        tuple: (patient_dirs, labels)
+            - patient_dirs: Hasta klasör yollarının listesi.
+            - labels: Her hasta için 0-indexed sınıf etiketi.
+
+    Raises:
+        FileNotFoundError: BI-RADS klasörleri bulunamazsa.
+        ValueError: Hasta klasöründe eksik görüntü varsa.
+    """
+    patient_dirs = []
+    labels = []
+    skipped = 0
+
+    # Beklenen BI-RADS klasörleri
+    expected_folders = list(BIRADS_FOLDER_TO_INDEX.keys())
+    found_folders = []
+
+    for birads_folder, class_idx in BIRADS_FOLDER_TO_INDEX.items():
+        birads_path = os.path.join(root_dir, birads_folder)
+
+        # Alt çizgi (BI-RADS_1) bulunamazsa tire (BI-RADS-1) varyantını dene
+        if not os.path.isdir(birads_path):
+            alt_folder = birads_folder.replace("_", "-")
+            alt_path = os.path.join(root_dir, alt_folder)
+            if os.path.isdir(alt_path):
+                birads_path = alt_path
+                birads_folder = alt_folder
+            else:
+                print(f"[UYARI] BI-RADS klasörü bulunamadı: {birads_path}")
+                continue
+
+        found_folders.append(birads_folder)
+
+        # Her hasta klasörünü tara
+        for patient_id in sorted(os.listdir(birads_path)):
+            patient_path = os.path.join(birads_path, patient_id)
+
+            if not os.path.isdir(patient_path):
+                continue  # Dosyaları atla, sadece klasörler
+
+            # 4 görüntünün varlığını kontrol et
+            missing_views = []
+            for view_name in VIEW_NAMES:
+                img_path = os.path.join(patient_path, f"{view_name}.png")
+                if not os.path.isfile(img_path):
+                    missing_views.append(view_name)
+
+            if missing_views:
+                print(
+                    f"[UYARI] Eksik görüntü, hasta atlanıyor: {patient_path} "
+                    f"(eksik: {', '.join(missing_views)})"
+                )
+                skipped += 1
+                continue
+
+            patient_dirs.append(patient_path)
+            labels.append(class_idx)
+
+    # Özet bilgi
+    if not found_folders:
+        raise FileNotFoundError(
+            f"Hiçbir BI-RADS klasörü bulunamadı: {root_dir}\n"
+            f"Beklenen klasörler: {expected_folders}\n"
+            f"Mevcut içerik: {os.listdir(root_dir) if os.path.isdir(root_dir) else 'DİZİN YOK'}"
+        )
+
+    print(f"\n[BİLGİ] Veri seti tarama sonucu:")
+    print(f"  Kök dizin: {root_dir}")
+    print(f"  Bulunan BI-RADS klasörleri: {found_folders}")
+    for class_idx in range(len(BIRADS_FOLDER_TO_INDEX)):
+        count = labels.count(class_idx)
+        if count > 0:
+            print(f"    Sınıf {class_idx}: {count} hasta")
+    print(f"  Toplam hasta: {len(patient_dirs)}")
+    if skipped > 0:
+        print(f"  Atlanan (eksik görüntü): {skipped}")
+
+    return patient_dirs, labels
+
+
+def prepare_patient_split(
+    root_dir: str,
+    test_dir: str,
+    train_ratio: float = 0.85,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+) -> Dict[str, Tuple[List[str], List[int]]]:
+    """
+    Hasta bazlı stratified train/val split uygular, test seti ayrı klasörden okunur.
+
+    Train ve val, root_dir içindeki veriden stratified split ile ayrılır.
+    Test seti ise test_dir klasöründen bağımsız olarak yüklenir.
+
+    Args:
+        root_dir: Train/Val veri setinin kök dizini (BI-RADS_1/, BI-RADS_2/, ... içeren).
+        test_dir: Sabit test seti kök dizini (aynı BI-RADS alt yapısı).
+        train_ratio: Eğitim seti oranı (root_dir içinden).
+        val_ratio: Doğrulama seti oranı (root_dir içinden).
+        seed: Rastgelelik tohumu (tekrarlanabilirlik için).
+
+    Returns:
+        dict: Her split için (patient_dirs, labels) tuple'ları.
+            {
+                "train": ([dir1, dir2, ...], [label1, label2, ...]),
+                "val": ([dir1, dir2, ...], [label1, label2, ...]),
+                "test": ([dir1, dir2, ...], [label1, label2, ...]),
+            }
+    """
+    assert abs(train_ratio + val_ratio - 1.0) < 1e-6, (
+        "Train ve val oranları toplamı 1.0 olmalıdır."
+    )
+
+    # Train/Val: Klasör yapısından hastaları ve etiketleri tara
+    patient_dirs, labels = scan_dataset_from_folders(root_dir)
+    labels_arr = np.array(labels)
+
+    # Train vs Val bölme
+    train_dirs, val_dirs, train_labels, val_labels = train_test_split(
+        patient_dirs, labels_arr,
+        test_size=val_ratio,
+        stratify=labels_arr,
+        random_state=seed,
+    )
+
+    # Test: Ayrı klasörden oku
+    test_dirs, test_labels = scan_dataset_from_folders(test_dir)
+
+    print(f"\n[BİLGİ] Veri bölme tamamlandı:")
+    print(f"  Train: {len(train_dirs)} hasta (kaynak: {root_dir})")
+    print(f"  Val:   {len(val_dirs)} hasta (kaynak: {root_dir})")
+    print(f"  Test:  {len(test_dirs)} hasta (kaynak: {test_dir})")
+
+    return {
+        "train": (train_dirs, train_labels.tolist()),
+        "val": (val_dirs, val_labels.tolist()),
+        "test": (test_dirs, test_labels),
+    }
+
+
+def _load_soft_target_index(distill_cfg: dict) -> Optional[Dict[str, np.ndarray]]:
+    """
+    Load per-patient teacher logits over the full train+val pool.
+
+    The config schema expects:
+        training.distill:
+            enabled: true
+            soft_target_prefix: artifacts/c6_ensemble_n4
+            ...
+
+    From the prefix, we read:
+        {prefix}_full_logits.npy   (N, 4) float32
+        {prefix}_patient_ids.npy   (N,)   <U
+    and return a dict {patient_id: logits_row}.
+
+    The same dictionary is shared by train + val datasets; the dataset's
+    __getitem__ does a per-sample lookup by patient_id, and rows whose pid
+    is missing fall back to soft_target_mask=False (CE-only for that sample).
+    """
+    prefix = distill_cfg.get("soft_target_prefix")
+    if not prefix:
+        return None
+    logits_path = f"{prefix}_full_logits.npy"
+    pid_path    = f"{prefix}_patient_ids.npy"
+    if not (os.path.exists(logits_path) and os.path.exists(pid_path)):
+        print(f"[WARN] Distillation soft targets missing: {logits_path}")
+        return None
+    logits = np.load(logits_path).astype(np.float32)
+    pids   = np.load(pid_path)
+    if logits.shape[0] != pids.shape[0]:
+        raise ValueError(
+            f"Soft-target shape mismatch: logits={logits.shape}, pids={pids.shape}"
+        )
+    print(f"[BİLGİ] Distillation soft targets loaded: "
+          f"{logits.shape[0]} patients, dim={logits.shape[1]}")
+    return {str(pid): logits[i] for i, pid in enumerate(pids)}
+
+
+def create_dataloaders(
+    config: dict,
+) -> Dict[str, DataLoader]:
+    """
+    Config dosyasına göre train, val ve test DataLoader'larını oluşturur.
+
+    Args:
+        config: Parsed YAML konfigürasyon sözlüğü.
+
+    Returns:
+        dict: {"train": DataLoader, "val": DataLoader, "test": DataLoader}
+    """
+    data_cfg = config["data"]
+    train_cfg = config["training"]
+    bit_depth = data_cfg.get("bit_depth", 16)
+
+    # Veri setini böl (train/val root_dir'den, test ayrı test_dir'den)
+    splits = prepare_patient_split(
+        root_dir=data_cfg["root_dir"],
+        test_dir=data_cfg["test_dir"],
+        train_ratio=data_cfg["split"]["train"],
+        val_ratio=data_cfg["split"]["val"],
+        seed=config["project"]["seed"],
+    )
+
+    # Transform pipeline'ları oluştur
+    train_transform = get_train_transforms(data_cfg)
+    val_transform = get_val_transforms(data_cfg)
+
+    # Distillation soft targets (Direction #5; Lesson #60). One dictionary
+    # shared across train + val datasets (test never has soft targets).
+    distill_cfg = train_cfg.get("distill") or {}
+    soft_index = _load_soft_target_index(distill_cfg) if distill_cfg.get("enabled") else None
+    train_soft_index = soft_index
+    val_soft_index   = soft_index
+
+    # Dataset nesneleri
+    train_dataset = MammographyDataset(
+        patient_dirs=splits["train"][0],
+        labels=splits["train"][1],
+        transform=train_transform,
+        bit_depth=bit_depth,
+        soft_target_index=train_soft_index,
+    )
+    val_dataset = MammographyDataset(
+        patient_dirs=splits["val"][0],
+        labels=splits["val"][1],
+        transform=val_transform,
+        bit_depth=bit_depth,
+        soft_target_index=val_soft_index,
+    )
+    test_dataset = MammographyDataset(
+        patient_dirs=splits["test"][0],
+        labels=splits["test"][1],
+        transform=val_transform,
+        bit_depth=bit_depth,
+    )
+
+    # DataLoader'lar
+    # Not: WeightedRandomSampler kaldırıldı. Sınıf dengesizliği yalnızca
+    # loss fonksiyonundaki class weights ile ele alınır (sqrt-inverse frequency).
+    # Sampler + class weights birlikte kullanıldığında çarpımsal aşırı telafi
+    # oluşuyor ve az örnekli sınıfların ezberlenmesine yol açıyordu.
+    dataloaders = {
+        "train": DataLoader(
+            train_dataset,
+            batch_size=train_cfg["batch_size"],
+            shuffle=True,
+            num_workers=data_cfg["num_workers"],
+            pin_memory=data_cfg["pin_memory"],
+            drop_last=True,
+        ),
+        "val": DataLoader(
+            val_dataset,
+            batch_size=train_cfg["batch_size"],
+            shuffle=False,
+            num_workers=data_cfg["num_workers"],
+            pin_memory=data_cfg["pin_memory"],
+        ),
+        "test": DataLoader(
+            test_dataset,
+            batch_size=train_cfg["batch_size"],
+            shuffle=False,
+            num_workers=data_cfg["num_workers"],
+            pin_memory=data_cfg["pin_memory"],
+        ),
+    }
+
+    return dataloaders

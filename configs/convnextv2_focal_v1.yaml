@@ -1,0 +1,149 @@
+# =============================================================================
+# ConvNeXtV2-Base — Focal Loss + Agresif Class Weights + Subgroup Boost
+# =============================================================================
+# Deney: Focal Loss ile zor örneklere odaklanma (BIRADS-2, BIRADS-4)
+#
+# Değişiklikler (baseline: convnextv2_base_original):
+#   1. loss_type: "focal" (gamma=2.0) — kolay örneklerin etkisini azaltır
+#   2. class_weights: BIRADS-2 (1.0→1.40) ve BIRADS-4 (1.23→1.35) artırıldı
+#      Confusion matrix'te en çok karışan bu 2 sınıf
+#   3. loss_weights: subgroup_head 0.35→0.45, full_head 0.50→0.45
+#      Subgroup head'ler BIRADS-1↔2 ve BIRADS-4↔5 ayrımını öğretiyor
+#   4. label_smoothing: 0.05→0.08 (focal loss ile birlikte daha iyi çalışır)
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "ConvNeXtV2-Base focal loss + aggressive class weights experiment"
+  seed: 42
+
+data:
+  root_dir: "PNG-8Bit"
+  test_dir: "PNG-8Bit-test"
+  image_size: 384
+  num_workers: 4
+  pin_memory: true
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1024
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 4
+  gradient_accumulation_steps: 16
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  # >>> DEĞİŞİKLİK 1: Focal Loss <<<
+  loss_type: "focal"
+  focal_gamma: 2.0
+  label_smoothing: 0.08
+
+  # >>> DEĞİŞİKLİK 2: Subgroup head ağırlığı artırıldı <<<
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  # >>> DEĞİŞİKLİK 3: Agresif class weights <<<
+  # BIRADS-2 en çok karışan sınıf (recall 54%) → ağırlık 1.0→1.40
+  # BIRADS-4 ikinci en çok karışan (recall 65%) → ağırlık 1.23→1.35
+  # BIRADS-1 güçlü zaten → 1.32→1.20 (biraz azalt)
+  # BIRADS-5 güçlü zaten → 1.13→1.0
+  class_weights: [1.20, 1.40, 1.35, 1.0]
+
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-focal-loss"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_focal_v1/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_focal_v1/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_focal_v1/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_focal_v1/checkpoints"
+  save_top_k: 3
+  save_last: true

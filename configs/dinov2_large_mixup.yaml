@@ -1,0 +1,133 @@
+# =============================================================================
+# DINOv2 ViT-Large — Mixup Deney
+# =============================================================================
+# Baseline: dinov2_large_original (F1 0.6751)
+# Değişiklik: use_mixup: true, mixup_alpha: 0.2
+# Not: ViT'ler Mixup'a CNN'lerden daha iyi yanıt verebilir
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "DINOv2 ViT-Large with Mixup augmentation"
+  seed: 42
+
+data:
+  root_dir: "PNG-8Bit"
+  test_dir: "PNG-8Bit-test"
+  image_size: 392
+  num_workers: 4
+  pin_memory: true
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 7
+    brightness: 0.08
+    contrast: 0.08
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "vit_large_patch14_dinov2.lvd142m"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1024
+    projection_dropout: 0.15
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  # Mixup ayarları
+  use_mixup: true
+  mixup_alpha: 0.2
+
+  optimizer:
+    name: "adamw"
+    lr: 2.0e-5
+    backbone_lr_scale: 0.1
+    weight_decay:
+      backbone: 0.1
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine_warmup"
+    warmup_epochs: 10
+    min_lr: 1.0e-7
+
+  loss_weights:
+    binary_head: 0.15
+    subgroup_head: 0.35
+    full_head: 0.50
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-model-improvements"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/dinov2_large_mixup/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/dinov2_large_mixup/plots"
+  classification_report:
+    save_dir: "outputs/dinov2_large_mixup/reports"
+
+checkpoint:
+  save_dir: "outputs/dinov2_large_mixup/checkpoints"
+  save_top_k: 3
+  save_last: true

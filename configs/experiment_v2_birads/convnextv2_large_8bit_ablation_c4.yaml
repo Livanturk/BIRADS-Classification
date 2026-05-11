@@ -1,0 +1,160 @@
+# =============================================================================
+# C4 — ConvNeXtV2-Base CE + SWA | 8-bit 1024² | Capacity Reduction Ablation
+# =============================================================================
+# B5'in üzerine backbone Large→Base düşürülür. Tek değişken: model kapasitesi.
+#
+# Motivasyon: ConvNeXtV2-Large (~197M param) 8,557 eğitim hastası için
+#   aşırı parametrelenmiş olabilir. Base (~89M param) yapısal bir regularizer
+#   görevi görerek memorization'ı azaltmalı. Val F1 hafif düşebilir ama
+#   test F1 artmalı (daha dar gap).
+#
+# Config diff (B5'den):
+#   ~ backbone.name: convnextv2_large → convnextv2_base
+#   ~ backbone.feature_dim: 1536 → 1024
+#   Diğer tüm parametreler B5 ile AYNI (SWA dahil).
+#
+# Hipotez: Test F1 >= 0.65, gap <= 5pp. Daha düşük kapasite = daha az overfit.
+# Kill kriteri: val_full_f1_macro < 0.55 by epoch 15.
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "C4 — ConvNeXtV2-Base CE + SWA | 8-bit 1024 | capacity reduction ablation"
+  seed: 42
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_base.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1024
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  # B5'den korunan: Stochastic Weight Averaging
+  use_swa: true
+  swa_start_epoch: 5
+
+  asymmetry_loss_weight: 0.10
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0
+  asymmetry_malign_weight: 1.0
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-1024-8bit-ablation"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c4/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c4/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_c4/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_8bit_ablation_c4/checkpoints"
+  save_top_k: 3
+  save_last: true

@@ -1,0 +1,144 @@
+# =============================================================================
+# ConvNeXtV2-Large — Segmentasyonsuz — HIERARCHICAL + DIM256 (Dataset_512_NoSeg)
+# =============================================================================
+# Deney: Projection dim 512→256 + Dropout artırımı (hierarchical model)
+# Hipotez: Daha dar temsil boyutu (256) ile fusion katmanlarının
+#   overfitting eğilimi azalır. NoSeg varyantı ile karşılaştırma.
+#
+# Değişiklikler (noseg_v1'e göre):
+#   - projection_dim: 512 → 256
+#   - projection_dropout: 0.2 → 0.3
+#   - lateral_fusion.attention_dropout: 0.15 → 0.25
+#   - lateral_fusion.ffn_dropout: 0.2 → 0.3
+#   - lateral_fusion.projection_dropout: 0.2 → 0.3
+#   - bilateral_fusion.attention_dropout: 0.2 → 0.3
+#   - bilateral_fusion.output_dropout: 0.25 → 0.35
+#   - classification.hidden_dim: 256 → 128
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "ConvNeXtV2-Large hierarchical dim256 no-segmentation"
+  seed: 42
+
+data:
+  root_dir: "Dataset_512_NoSeg"
+  test_dir: "Dataset_512_NoSeg_Test"
+  image_size: 512
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 16
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.3
+
+  projection_dim: 256
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.25
+    ffn_dropout: 0.3
+    projection_dropout: 0.3
+    num_layers: 2
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.3
+    output_dropout: 0.35
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 128
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 4
+  gradient_accumulation_steps: 16
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_weights:
+    binary_head: 0.15
+    subgroup_head: 0.35
+    full_head: 0.50
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-512-backbone-sweep"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_noseg_dim256_v1/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_noseg_dim256_v1/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_noseg_dim256_v1/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_noseg_dim256_v1/checkpoints"
+  save_top_k: 3
+  save_last: true

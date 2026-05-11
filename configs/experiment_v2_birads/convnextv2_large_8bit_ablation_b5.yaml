@@ -1,0 +1,164 @@
+# =============================================================================
+# B5 — ConvNeXtV2-Large CE + SWA | 8-bit 1024² | Weight Averaging Ablation
+# =============================================================================
+# B1'in üzerine Stochastic Weight Averaging (SWA) eklenir. Tek değişken: SWA.
+#
+# Motivasyon: A1-CE (B1'in atası) epoch 6'da best val F1'e ulaştı ve epoch 21'de
+#   early stop oldu. Bu, modelin keskin (sharp) bir minimuma hızla ulaştığını
+#   gösterir. SWA, epoch 5'ten itibaren model ağırlıklarını ortalayarak daha
+#   düz (flat) bir minimuma yakınsar → daha iyi generalizasyon.
+#
+# Uygulama: train.py satır 591-747. SWA modeli eğitim sonunda ayrıca test edilir.
+#   SWA F1 > best checkpoint F1 ise otomatik olarak SWA modeli seçilir.
+#   BatchNorm istatistikleri train set üzerinde güncellenir (update_bn).
+#
+# Config diff (B1'den):
+#   + use_swa: true
+#   + swa_start_epoch: 5
+#   Diğer tüm parametreler B1 ile AYNI.
+#
+# Hipotez: Test F1 macro >= 0.70. SWA, best checkpoint'tan +0.5-2pp daha iyi olmalı.
+# Kill kriteri: B1 ile aynı (SWA post-training, best checkpoint'a zarar veremez).
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "B5 — ConvNeXtV2-Large CE + SWA | 8-bit 1024 | weight averaging ablation"
+  seed: 42
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+    use_deformable: true
+    num_deformable_points: 4
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  loss_type: "ce"
+  label_smoothing: 0.05
+
+  loss_weights:
+    binary_head: 0.10
+    subgroup_head: 0.45
+    full_head: 0.45
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  # B5 ablation değişkeni: Stochastic Weight Averaging
+  use_swa: true
+  swa_start_epoch: 5
+
+  asymmetry_loss_weight: 0.10
+  asymmetry_margin: 15.0
+  asymmetry_benign_weight: 0.0
+  asymmetry_malign_weight: 1.0
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+  use_ordinal_head: false
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-1024-8bit-ablation"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/convnextv2_large_8bit_ablation_b5/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_b5/plots"
+  classification_report:
+    save_dir: "outputs/convnextv2_large_8bit_ablation_b5/reports"
+
+checkpoint:
+  save_dir: "outputs/convnextv2_large_8bit_ablation_b5/checkpoints"
+  save_top_k: 3
+  save_last: true

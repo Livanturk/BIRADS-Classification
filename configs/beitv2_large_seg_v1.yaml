@@ -1,0 +1,138 @@
+# =============================================================================
+# BEiTv2-Large — Segmentasyonlu (Dataset_512)
+# =============================================================================
+# Deney: BEiTv2-Large, VQ-KD pretraining ile
+# Backbone: beitv2_large_patch16_224.in1k_ft_in22k_in1k (1024-dim)
+# image_size: 512 (patch_size=16, 512/16=32×32=1024 spatial token — TAM BÖLÜNÜR)
+#
+# BEiTv2 fine-tuning stratejisi:
+#   - VQ-KD pretraining: discrete visual token → implicit foreground/background ayrımı
+#   - patch_size=16, 512'ye tam bölünür → pozisyonel embedding interpolasyonu gerekir
+#   - 224→512 büyük jump, ilk epoch'larda instability olabilir → warmup: 12
+#   - backbone_lr_scale: 0.1 (orijinalden uzaklaşmayı sınırla)
+#   - Seg veri ile test: temiz doku üzerinde VQ tokenizasyonun etkisi
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "BEiTv2-Large segmented dataset experiment"
+  seed: 42
+
+data:
+  root_dir: "Dataset_512"
+  test_dir: "Dataset_512_Test"
+  image_size: 512                          # patch_size=16, 512/16=32×32=1024 token
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 16
+  dataset_variant: "seg"
+
+  split:
+    train: 0.85
+    val: 0.15
+
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 7                    # ViT'lerde hafif augmentation
+    brightness: 0.08
+    contrast: 0.08
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "beitv2_large_patch16_224.in1k_ft_in22k_in1k"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1024
+    projection_dropout: 0.15
+
+  projection_dim: 512
+
+  lateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.15
+    ffn_dropout: 0.2
+    projection_dropout: 0.2
+    num_layers: 2
+
+  bilateral_fusion:
+    num_heads: 8
+    attention_dropout: 0.2
+    output_dropout: 0.25
+    use_diff: true
+    use_avg: true
+
+  classification:
+    num_classes: 4
+    hidden_dim: 256
+    dropout: 0.5
+    temperature: 1.5
+
+training:
+  epochs: 100
+  batch_size: 2                            # 1024 spatial token → VRAM yoğun
+  gradient_accumulation_steps: 32          # Efektif batch = 2 × 32 = 64
+
+  optimizer:
+    name: "adamw"
+    lr: 2.0e-5
+    backbone_lr_scale: 0.1                 # 224→512 jump büyük, backbone yavaş öğrenmeli
+    weight_decay:
+      backbone: 0.1
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine_warmup"
+    warmup_epochs: 12                      # 224→512 pozisyonel embed interpolasyonu, daha uzun warmup
+    min_lr: 1.0e-7
+
+  loss_weights:
+    binary_head: 0.15
+    subgroup_head: 0.35
+    full_head: 0.50
+
+  class_weights: [1.28, 1.00, 1.20, 1.11]
+
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: "val_full_f1_macro"
+    mode: "max"
+
+ablation:
+  use_lateral_fusion: true
+  use_bilateral_fusion: true
+  use_binary_head: true
+  use_subgroup_head: true
+  use_uncertainty: true
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "birads-512-backbone-sweep"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  gradcam:
+    enabled: true
+    target_layer: "auto"
+    num_samples: 20
+    save_dir: "outputs/beitv2_large_seg_v1/gradcam"
+  confusion_matrix:
+    save_dir: "outputs/beitv2_large_seg_v1/plots"
+  classification_report:
+    save_dir: "outputs/beitv2_large_seg_v1/reports"
+
+checkpoint:
+  save_dir: "outputs/beitv2_large_seg_v1/checkpoints"
+  save_top_k: 3
+  save_last: true

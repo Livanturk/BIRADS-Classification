@@ -1,0 +1,131 @@
+# =============================================================================
+# G1 — Cascade Stage-1 (Binary): Benign vs Malign
+# =============================================================================
+# Specialist binary classifier. Per claude.md doctrine, the binary head
+# bypasses the fusion chain — backbone -> mean-pool over (4 views, S spatial
+# tokens) -> 2-class head. This is *different* from C6's training pipeline
+# (which always runs lateral + bilateral fusion); the cascade design intentionally
+# isolates each task into its own specialist representation.
+#
+# Train data: data/manifests/cascade/train_stage1_binary.csv  (7273 patients)
+# Val data:   data/manifests/cascade/val_stage1_binary.csv    (1284 patients)
+# Class weights: sqrt-inv from manifest -> [benign=1.04, malign=1.00]
+# =============================================================================
+
+project:
+  name: "mammography-birads-classification"
+  description: "G1 — Cascade Stage-1 binary specialist (backbone-only, no fusion)"
+  seed: 42
+
+cascade:
+  stage: stage1
+  train_manifest: data/manifests/cascade/train_stage1_binary.csv
+  val_manifest:   data/manifests/cascade/val_stage1_binary.csv
+
+data:
+  root_dir: "Dataset_1024_8bit"
+  test_dir: "Dataset_Test_1024_8bit"
+  image_size: 1024
+  num_workers: 4
+  pin_memory: true
+  bit_depth: 8
+  dataset_variant: "noseg"
+
+  # Split is materialized in the manifests (data.cascade_loader bypasses
+  # data.dataset.prepare_patient_split). These ratios are kept for parity
+  # with the C6 config but are not consulted at runtime.
+  split:
+    train: 0.85
+    val: 0.15
+
+  # Identical to C6
+  augmentation:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.0
+    rotation_degrees: 10
+    brightness: 0.1
+    contrast: 0.1
+    random_erasing: 0.1
+
+model:
+  backbone:
+    name: "convnextv2_large.fcmae_ft_in22k_in1k_384"
+    pretrained: true
+    freeze_layers: 0
+    feature_dim: 1536
+    projection_dropout: 0.2
+
+  projection_dim: 512
+
+  # Stage-1 skips fusion (claude.md doctrine). lateral_fusion / bilateral_fusion
+  # blocks omitted — CascadeStageModel ignores them when stage=stage1.
+
+  classification:
+    num_classes: 2
+    hidden_dim: 256
+    dropout: 0.5
+
+training:
+  epochs: 100
+  batch_size: 2
+  gradient_accumulation_steps: 32
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-5
+    backbone_lr_scale: 0.2
+    weight_decay:
+      backbone: 0.05
+      fusion: 0.05
+      head: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "onecycle"
+    max_lr: 5.0e-4
+    pct_start: 0.3
+    div_factor: 10.0
+    final_div_factor: 100.0
+    anneal_strategy: "cos"
+
+  label_smoothing: 0.05
+
+  # 2-class CE class weights (sqrt-inv from train_stage1_binary.csv:
+  # benign=3767, malign=3506 -> sqrt(3767/3506)=1.037)
+  class_weights: [1.04, 1.00]
+
+  # SWA — same as C6
+  use_swa: true
+  swa_start_epoch: 5
+
+  early_stopping:
+    enabled: true
+    patience: 20
+    metric: "val_f1_macro"
+    mode: "max"
+
+mlflow:
+  tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
+  experiment_name: "cascade/stage1_binary"
+  dagshub_username: "alilivanturk"
+  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  log_every_n_steps: 50
+  tags:
+    parent_experiment: C6
+    cascade_stage: stage1
+
+wandb:
+  project: "mammography-birads-classification"
+  entity: ""
+
+visualization:
+  confusion_matrix:
+    save_dir: "outputs/G1_stage1_binary/plots"
+  classification_report:
+    save_dir: "outputs/G1_stage1_binary/reports"
+
+checkpoint:
+  save_dir: "outputs/G1_stage1_binary/checkpoints"
+  save_top_k: 3
+  save_last: true
