@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/build_cascade_manifests.py --dry-run)",
+      "Bash(python tools/build_cascade_manifests.py)",
+      "Bash(python -c ' *)",
+      "Bash(chmod +x /home/alilivan.turk/Desktop/YeniYaklaşım/scripts/slurm/*.sh)",
+      "Bash(python tools/cascade_evaluate.py --probs outputs/cascade/test_probs.parquet --report-out outputs/cascade/evaluation_report.md --metrics-out outputs/cascade/evaluation_metrics.json --no-mlflow)",
+      "Bash(chmod +x scripts/slurm/train_F2_la_tau*.sh)",
+      "Bash(python3 -c \"import docx; print\\(docx.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(python3 tasks/build_gseries_report.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)",
+      "Bash(sed -i 's|seed=7|seed=555|g; s|seed: 7|seed: 555|; s|c6_seed7|c6_seed555|g' /home/alilivan.turk/Desktop/YeniYaklaşım/configs/experiment_v2_birads/convnextv2_large_8bit_ablation_c6_seed555.yaml)",
+      "Bash(sed -i 's|seed=7|seed=999|g; s|seed: 7|seed: 999|; s|c6_seed7|c6_seed999|g' /home/alilivan.turk/Desktop/YeniYaklaşım/configs/experiment_v2_birads/convnextv2_large_8bit_ablation_c6_seed999.yaml)",
+      "Bash(chmod +x /home/alilivan.turk/Desktop/YeniYaklaşım/scripts/run_phase0c_parallel.sh /home/alilivan.turk/Desktop/YeniYaklaşım/scripts/run_phase1_hflip_parallel.sh)",
+      "Bash(python3 -c \"import pandas as pd; df = pd.read_excel\\('MLflow_Deney_Sonuclari_Exp19_to_25.xlsx', sheet_name=None\\); [print\\(f'=== {k} ===\\\\n{v.to_string\\(\\)}\\\\n'\\) for k,v in df.items\\(\\)]\")"
+    ]
+  }
+}
