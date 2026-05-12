@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 import pandas as pd
@@ -35,12 +35,30 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
 )
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-
-
 CLASS_NAMES = ("BR1", "BR2", "BR4", "BR5")
+
+
+def get_env_or_config(
+    config_value: Optional[str],
+    env_names: Iterable[str],
+    default: str = "",
+) -> str:
+    """Resolve a value from env first, then config, expanding ${ENV_NAME}."""
+    for env_name in env_names:
+        env_value = os.getenv(env_name)
+        if env_value:
+            return env_value
+
+    if not config_value:
+        return default
+
+    if isinstance(config_value, str):
+        value = config_value.strip()
+        if value.startswith("${") and value.endswith("}"):
+            return os.getenv(value[2:-1], default)
+        return value
+
+    return str(config_value)
 
 # C6 frozen baseline (Lesson #44, MLflow run ecef19a5f0e44dd68f9903ad35366c24)
 C6_BASELINE = {
@@ -245,10 +263,17 @@ def maybe_log_to_mlflow(metrics_soft, metrics_hard, soft_delta, breakdown, repor
             uri = ml.get("tracking_uri")
             if uri:
                 mlflow.set_tracking_uri(uri)
-                if ml.get("dagshub_username") and ml.get("dagshub_token"):
-                    import os
-                    os.environ["MLFLOW_TRACKING_USERNAME"] = ml["dagshub_username"]
-                    os.environ["MLFLOW_TRACKING_PASSWORD"] = ml["dagshub_token"]
+                dagshub_username = get_env_or_config(
+                    ml.get("dagshub_username", ""),
+                    ("MLFLOW_TRACKING_USERNAME", "DAGSHUB_USERNAME"),
+                )
+                dagshub_token = get_env_or_config(
+                    ml.get("dagshub_token", ""),
+                    ("MLFLOW_TRACKING_PASSWORD", "DAGSHUB_TOKEN"),
+                )
+                if dagshub_token:
+                    os.environ.setdefault("MLFLOW_TRACKING_USERNAME", dagshub_username or "token")
+                    os.environ.setdefault("MLFLOW_TRACKING_PASSWORD", dagshub_token)
         mlflow.set_experiment("cascade/evaluation")
         with mlflow.start_run(run_name="cascade_test_eval"):
             mlflow.log_metric("soft_f1_macro", metrics_soft["f1_macro"])

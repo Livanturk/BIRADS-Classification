@@ -136,7 +136,7 @@ Root cause: train→test prior shift compounding multiplicatively across cascade
 
 ## Open issues / risks to watch
 
-1. **Hardcoded DagsHub token in configs** — the C6 config (and now the cascade configs, per the existing project convention) embeds `dagshub_token: d176ee2b...` in plaintext. The token is already publicly exposed on disk; the cascade configs reuse the same value rather than introducing a fresh leak. Recommendation post-experiment: rotate the token and migrate to an env-var (`MLFLOW_TRACKING_PASSWORD`) reference.
+1. **Hardcoded DagsHub token in configs** — resolved by moving DagsHub auth to env vars (`DAGSHUB_TOKEN` or `MLFLOW_TRACKING_PASSWORD`) and removing plaintext token values from committed configs. Rotate the previously exposed token before using remote tracking again.
 2. **Stage-1 architectural divergence from prompt's "same architecture"** — see "Doctrine clarification" above. If Stage-1 misses the 0.93 binary gate, fall back to fusion-enabled Stage-1 by setting `cascade.stage: stage2a` in a renamed config OR adding a `stage1_with_fusion` mode to `CascadeStageModel`.
 3. **Test-prior gap (Lesson #47)** — soft cascade's per-class probs are uncalibrated to test prior by design (per guardrail #10). If macro F1 lands in [0.69, 0.70], the next logical experiment is a Saerens-style prior correction at inference, but that is *out of scope for this experiment*.
 4. **`tasks/lessons.md` is empty in the repo.** All seven lessons referenced in the prompt arrived through the chat. Future Claude sessions reading the repo cold will not see them.

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import wandb
+from utils.secret_utils import is_sensitive_config_key
 
 
 class WandbLogger:
@@ -78,6 +79,8 @@ class WandbLogger:
             if isinstance(value, dict):
                 self._flatten_dict(value, flat, full_key)
             else:
+                if is_sensitive_config_key(full_key):
+                    continue
                 flat[full_key] = value
 
     def log_metrics(self, metrics: dict, step: Optional[int] = None):

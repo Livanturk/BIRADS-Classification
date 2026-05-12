@@ -113,7 +113,7 @@ mlflow:
   tracking_uri: "https://dagshub.com/alilivanturk/Mammography-BIRADS-PNG8Bit.mlflow"
   experiment_name: "birads-model-improvements"
   dagshub_username: "alilivanturk"
-  dagshub_token: "d176ee2b4802fb2eb5e703cde1065dec251804e1"
+  dagshub_token: "${DAGSHUB_TOKEN}"
   log_every_n_steps: 50
 
 wandb:

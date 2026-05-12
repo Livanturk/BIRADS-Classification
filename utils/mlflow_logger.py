@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 import mlflow
 import mlflow.pytorch
+from utils.secret_utils import get_env_or_config, is_sensitive_config_key
 
 # SSL doğrulamasını devre dışı bırak (kurumsal ağ kısıtlamaları için)
 os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
@@ -46,12 +47,18 @@ class ExperimentLogger:
         self.config = config
         mlflow_cfg = config.get("mlflow", {})
 
-        # DagsHub token ayarla (env variable veya config'den)
-        dagshub_username = mlflow_cfg.get("dagshub_username", "")
-        dagshub_token = mlflow_cfg.get("dagshub_token", "")
+        # DagsHub credentials: prefer env vars; config may contain ${DAGSHUB_TOKEN}.
+        dagshub_username = get_env_or_config(
+            mlflow_cfg.get("dagshub_username", ""),
+            ("MLFLOW_TRACKING_USERNAME", "DAGSHUB_USERNAME"),
+        )
+        dagshub_token = get_env_or_config(
+            mlflow_cfg.get("dagshub_token", ""),
+            ("MLFLOW_TRACKING_PASSWORD", "DAGSHUB_TOKEN"),
+        )
         if dagshub_token:
-            os.environ["MLFLOW_TRACKING_USERNAME"] = dagshub_username or "token"
-            os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
+            os.environ.setdefault("MLFLOW_TRACKING_USERNAME", dagshub_username or "token")
+            os.environ.setdefault("MLFLOW_TRACKING_PASSWORD", dagshub_token)
 
         # MLFlow tracking URI
         tracking_uri = mlflow_cfg.get(
@@ -101,6 +108,8 @@ class ExperimentLogger:
             if isinstance(value, dict):
                 self.log_params_flat(value, prefix=full_key)
             else:
+                if is_sensitive_config_key(full_key):
+                    continue
                 # MLFlow parametre anahtarı max 250 karakter
                 try:
                     mlflow.log_param(full_key[:250], value)

@@ -33,6 +33,11 @@ wandb/
 # MLflow local DB
 mlflow.db
 
+# Local secrets
+.env
+.env.*
+!.env.example
+
 # Python cache
 __pycache__/
 **/__pycache__/
